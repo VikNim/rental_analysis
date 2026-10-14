@@ -1,0 +1,93 @@
+# Source registry for 02_ingest_sources.
+#
+# Adding a source = adding a block here. No notebook code changes unless the file has a
+# brand-new shape (then add a validator to the notebook).
+#
+# strategy:
+#   static       The URL never changes; the publisher refreshes the file in place (Zillow).
+#                The vintage comes from the data itself, not from the URL.
+#   latest_year  The URL contains {year}. The newest published vintage is discovered by probing
+#                year_candidates from newest to oldest. A 404 means "not published yet, try the
+#                previous year". A 403 or connection error means "host blocked": stop, don't guess.
+#                Set `pin` to a year to freeze the vintage for a reproducible run; null = auto-latest.
+#   manual       No direct URL. The file is uploaded by hand and registered with register_manual_file().
+#
+# Every non-manual source lists allowed_hosts. Both the configured URL and the final URL after any
+# redirect must be https and on one of those hosts, otherwise the download is rejected.
+
+sources:
+
+  - name: census_county_reference
+    enabled: true
+    strategy: static
+    url: https://www2.census.gov/geo/docs/reference/codes2020/national_county2020.txt
+    allowed_hosts: [www2.census.gov]
+    subdir: fips_reference
+    stem: national_county2020
+    ext: .txt
+    validator: fips_reference
+    vintage_label: "Census 2020-vintage county reference"
+
+  - name: zillow_zori_county
+    enabled: true
+    strategy: static          # same URL, refreshed in place; as-of date is read from the file's last month column
+    url: https://files.zillowstatic.com/research/public_csvs/zori/County_zori_uc_sfrcondomfr_sm_month.csv
+    allowed_hosts: [files.zillowstatic.com]
+    subdir: zori
+    stem: County_zori_uc_sfrcondomfr_sm_month
+    ext: .csv
+    validator: zillow_zori
+
+  - name: acs5_county
+    enabled: true
+    strategy: latest_year
+    url_template: "https://api.census.gov/data/{year}/acs/acs5?get=NAME,{variables}&for=county:*"
+    probe_template: "https://api.census.gov/data/{year}/acs/acs5?get=NAME,B25064_001E&for=state:51"
+    probe_expect: json                              # a 200 alone is not proof: the probe body must parse as the API's JSON array
+    # api.census.gov answers a keyless request with an HTML "Missing Key" page (HTTP 200). A free key is required.
+    # The key is NEVER written here. The notebook reads it from the Databricks secret below (preferred) or from
+    # the 'census_api_key' widget / job parameter, adds it to the request as ?key=..., and scrubs it from all output.
+    api_key:
+      query_param: key
+      widget: census_api_key
+      secret_scope: rental_analysis
+      secret_key: census_api_key
+      required: true
+    year_candidates: {start_offset: 1, count: 4}   # current year -1, -2, -3, -4 (the 5-year file for year Y appears in December of Y+1)
+    pin: null                                       # e.g. 2024 to freeze the vintage
+    allowed_hosts: [api.census.gov]
+    subdir: acs
+    stem: acs5_county_rent_income
+    ext: .json
+    validator: acs_api
+    vintage_label: "ACS 5-year ending {year}"
+    # Each variable is requested as estimate (E) and margin of error (M).
+    # B25064 median gross rent | B25071 median gross rent as % of income | B19013 median household income
+    # B25070 gross rent as % of income distribution (001 = total ... 011 = not computed)
+    variables:
+      - B25064_001
+      - B25071_001
+      - B19013_001
+      - B25070_001
+      - B25070_002
+      - B25070_003
+      - B25070_004
+      - B25070_005
+      - B25070_006
+      - B25070_007
+      - B25070_008
+      - B25070_009
+      - B25070_010
+      - B25070_011
+
+  - name: hud_chas_county
+    enabled: true
+    strategy: manual
+    subdir: chas
+    stem: chas_county
+    ext: .zip
+    manual_note: >
+      HUD serves CHAS through a download dropdown and no direct URL is visible on the page.
+      Download the county-level (summary level 050) zip in your browser and upload it to the chas/ folder,
+      then call register_manual_file("hud_chas_county", <path>). To automate later: copy the zip URL from your
+      browser's Network tab, switch this block to strategy: latest_year (or static), and add a validator.
